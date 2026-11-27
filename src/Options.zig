@@ -9,6 +9,8 @@ cli_args: rubr.cli.Args = undefined,
 
 exe_name: ?[]const u8 = null,
 print_help: bool = false,
+junk: bool = false,
+ansi: bool = false,
 utf8: bool = false,
 input_fp: ?[]const u8 = null,
 output_fp: ?[]const u8 = null,
@@ -30,6 +32,10 @@ pub fn parse(self: *Self) !void {
     while (args.pop()) |arg| {
         if (arg.is("-h", "--help")) {
             self.print_help = true;
+        } else if (arg.is("-j", "--junk")) {
+            self.junk = true;
+        } else if (arg.is("-a", "--ansi")) {
+            self.ansi = true;
         } else if (arg.is("-u", "--utf8")) {
             self.utf8 = true;
         } else if (arg.is("-i", "--input")) {
@@ -46,6 +52,8 @@ pub fn parse(self: *Self) !void {
 pub fn printHelp(self: Self, w: *std.Io.Writer) !void {
     try w.print("Help for {s}\n", .{self.exe_name orelse "<no exe_name>"});
     try w.print("  -h/--help    Print this help\n", .{});
+    try w.print("  -j/--junk    Remove binary junk\n", .{});
+    try w.print("  -a/--ansi    Remove ANSI color codes\n", .{});
     try w.print("  -u/--utf8    Remove UTF-8 codepoints\n", .{});
     try w.print("  -i/--input   Input filename\n", .{});
     try w.print("  -o/--output  Output filename\n", .{});

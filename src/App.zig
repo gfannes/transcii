@@ -1,4 +1,5 @@
 const std = @import("std");
+const rubr = @import("rubr.zig");
 const Options = @import("Options.zig");
 
 const Self = @This();
@@ -40,6 +41,18 @@ pub fn run(self: *Self) !void {
     var content = file_content;
 
     var did_something: bool = false;
+    if (self.options.junk) {
+        var junk: Junk = .{ .input = content, .output = content };
+        try junk.call();
+        content = junk.output;
+        did_something = true;
+    }
+    if (self.options.ansi) {
+        var ansi: Ansi = .{ .input = content, .output = content };
+        try ansi.call();
+        content = ansi.output;
+        did_something = true;
+    }
     if (self.options.utf8) {
         var utf8: Utf8 = .{ .input = content, .output = content };
         try utf8.call();
@@ -54,18 +67,6 @@ pub fn run(self: *Self) !void {
     }
 }
 
-const ByteRange = struct {
-    content: []const u8,
-    ix: usize = 0,
-
-    fn pop(self: *@This()) ?u8 {
-        if (self.ix >= self.content.len)
-            return null;
-        defer self.ix += 1;
-        return self.content[self.ix];
-    }
-};
-
 const Utf8 = struct {
     input: []const u8,
     output: []u8,
@@ -75,24 +76,24 @@ const Utf8 = struct {
         self.write_ix = 0;
         defer self.output.len = self.write_ix;
 
-        var byte_range: ByteRange = .{ .content = self.input };
+        var strange: rubr.strng.Strange = .init(self.input);
 
-        while (byte_range.pop()) |b0| {
+        while (strange.popOne()) |b0| {
             if (b0 <= 0x7f) {
                 self.process_1(b0);
             } else if (b0 < 0xc2) {
                 return error.IllegalUtf8;
             } else {
-                const b1 = byte_range.pop() orelse return error.ExpectedData;
+                const b1 = strange.popOne() orelse return error.ExpectedData;
                 if (b0 <= 0xdf) {
                     try self.process_2(b0, b1);
                 } else {
-                    const b2 = byte_range.pop() orelse return error.ExpectedData;
+                    const b2 = strange.popOne() orelse return error.ExpectedData;
                     if (b0 <= 0xef) {
                         try self.process_3(b0, b1, b2);
                     } else {
                         if (b0 <= 0xef) {
-                            const b3 = byte_range.pop() orelse return error.ExpectedData;
+                            const b3 = strange.popOne() orelse return error.ExpectedData;
                             try self.process_4(b0, b1, b2, b3);
                         } else {
                             return error.IllegalUtf8;
@@ -147,5 +148,52 @@ const Utf8 = struct {
 
         self.output[self.write_ix] = ascii;
         self.write_ix += 1;
+    }
+};
+
+const Ansi = struct {
+    input: []const u8,
+    output: []u8,
+    write_ix: usize = undefined,
+    fn call(self: *@This()) !void {
+        self.write_ix = 0;
+        defer self.output.len = self.write_ix;
+
+        var strange: rubr.strng.Strange = .init(self.input);
+        while (strange.popTo('\x1b')) |str| {
+            for (str, 0..) |ch, ix|
+                self.output[self.write_ix + ix] = ch;
+            self.write_ix += str.len;
+
+            // Drop the ANSI code
+            _ = strange.popTo('m');
+        }
+
+        if (strange.popAll()) |str| {
+            for (str, 0..) |ch, ix|
+                self.output[self.write_ix + ix] = ch;
+            self.write_ix += str.len;
+        }
+    }
+};
+
+const Junk = struct {
+    input: []const u8,
+    output: []u8,
+    write_ix: usize = undefined,
+    fn call(self: *@This()) !void {
+        self.write_ix = 0;
+        defer self.output.len = self.write_ix;
+
+        var strange: rubr.strng.Strange = .init(self.input);
+        while (strange.popOne()) |b| {
+            switch (b) {
+                '\x00', '\xfe' => {},
+                else => {
+                    self.output[self.write_ix] = b;
+                    self.write_ix += 1;
+                },
+            }
+        }
     }
 };

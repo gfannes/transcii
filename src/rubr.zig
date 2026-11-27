@@ -1,4 +1,4 @@
-// Output from `rake export[cli]` from https://github.com/gfannes/rubr from 2026-11-19
+// Output from `rake export[cli,strng]` from https://github.com/gfannes/rubr from 2026-11-27
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -11,11 +11,14 @@ pub const cli = struct {
     
         a: std.mem.Allocator,
         argv: [][]const u8 = &.{},
+        orig_len: ?usize = null,
         head: usize = 0,
     
         pub fn deinit(self: *Self) void {
             for (self.argv) |arg|
                 self.a.free(arg);
+            if (self.orig_len) |orig_len|
+                self.argv.len = orig_len;
             self.a.free(self.argv);
         }
     
@@ -30,6 +33,7 @@ pub const cli = struct {
                 self.argv[ix] = try self.a.dupe(u8, os_arg);
     
             // This is necessary for Windows: os_args.vector.len is too long.
+            self.orig_len = self.argv.len;
             self.argv.len = ix;
         }
         pub fn setupFromData(self: *Self, argv: []const []const u8) !void {
@@ -316,5 +320,219 @@ pub const Log = struct {
             self._do_close = false;
         }
     }
+    
+};
+
+// Export from 'src/strng.zig'
+pub const strng = struct {
+    // &todo Support avoiding escaping with balanced brackets
+    // &todo Implement escaping
+    // &todo Support creating file/folder tree for UTs (mod+cli)
+    // &todo Create spec
+    // - Support for post-body attributes?
+    
+    pub const Strange = struct {
+        const Self = @This();
+    
+        // For performance, we use two pointers iso a slice: popping at the front does not require a len update.
+        begin: [*]const u8,
+        end: [*]const u8,
+    
+        pub fn init(content: []const u8) Self {
+            return .{ .begin = content.ptr, .end = content.ptr + content.len };
+        }
+    
+        const empty_slice: []const u8 = &.{};
+        pub fn clear(self: *Self) void {
+            self.begin = empty_slice.ptr;
+            self.end = empty_slice.ptr;
+        }
+    
+        pub fn empty(self: Self) bool {
+            return self.begin == self.end;
+        }
+        pub fn size(self: Self) usize {
+            return self.end - self.begin;
+        }
+    
+        pub fn str(self: Self) []const u8 {
+            return self.begin[0..self.size()];
+        }
+    
+        pub fn front(self: Self) ?u8 {
+            if (self.empty())
+                return null;
+            return self.begin[0];
+        }
+        pub fn back(self: Self) ?u8 {
+            const s = self.size();
+            if (s == 0)
+                return null;
+            return self.begin[s - 1];
+        }
+    
+        pub fn popAll(self: *Self) ?[]const u8 {
+            if (self.empty())
+                return null;
+            defer self.clear();
+            return self.str();
+        }
+    
+        pub fn popMany(self: *Self, ch: u8) usize {
+            const s = self.size();
+            for (0..s) |ix| {
+                if (self.begin[ix] != ch) {
+                    self._popFront(ix);
+                    return ix;
+                }
+            }
+            defer self.clear();
+            return self.size();
+        }
+        pub fn popManyBack(self: *Self, ch: u8) usize {
+            var count: usize = 0;
+            {
+                var s = self.size();
+                while (s > 0 and self.begin[s - 1] == ch) {
+                    s -= 1;
+                    count += 1;
+                }
+            }
+            self._popBack(count);
+            return count;
+        }
+    
+        // Pops ch as well but won't include this in the return slice
+        pub fn popTo(self: *Self, ch: u8) ?[]const u8 {
+            if (std.mem.indexOfScalar(u8, self.str(), ch)) |ix| {
+                defer self._popFront(ix + 1);
+                return self.begin[0..ix];
+            } else {
+                return null;
+            }
+        }
+    
+        pub fn popChar(self: *Self, ch: u8) bool {
+            if (!self.empty() and self.begin[0] == ch) {
+                self._popFront(1);
+                return true;
+            }
+            return false;
+        }
+        pub fn popCharBack(self: *Self, ch: u8) bool {
+            const s = self.size();
+            if (s > 0 and self.begin[s - 1] == ch) {
+                self._popBack(1);
+                return true;
+            }
+            return false;
+        }
+    
+        pub fn popOne(self: *Self) ?u8 {
+            if (self.empty())
+                return null;
+            defer self._popFront(1);
+            return self.begin[0];
+        }
+        pub fn popOneBack(self: *Self) ?u8 {
+            const s = self.size();
+            if (s == 0)
+                return null;
+            defer self._popBack(1);
+            return self.begin[s - 1];
+        }
+    
+        pub fn popStr(self: *Self, s: []const u8) bool {
+            if (!std.mem.startsWith(u8, self.str(), s))
+                return false;
+            self._popFront(s.len);
+            return true;
+        }
+        pub fn popStrBack(self: *Self, s: []const u8) bool {
+            if (!std.mem.endsWith(u8, self.str(), s))
+                return false;
+            self._popBack(s.len);
+            return true;
+        }
+    
+        pub fn popLine(self: *Self) ?[]const u8 {
+            if (self.empty())
+                return null;
+    
+            var line = self.str();
+            if (std.mem.indexOfScalar(u8, line, '\n')) |ix| {
+                line.len = if (ix > 0 and line[ix - 1] == '\r') ix - 1 else ix;
+                self._popFront(ix + 1);
+            } else {
+                self.clear();
+            }
+    
+            return line;
+        }
+    
+        pub fn popInt(self: *Self, T: type) ?T {
+            // Find number of chars comprising number
+            var slice = self.str();
+            for (slice, 0..) |ch, ix| {
+                switch (ch) {
+                    '0'...'9', '-', '+' => {},
+                    else => {
+                        slice.len = ix;
+                        break;
+                    },
+                }
+            }
+            if (std.fmt.parseInt(T, slice, 10) catch null) |v| {
+                self._popFront(slice.len);
+                return v;
+            }
+            return null;
+        }
+    
+        pub fn popIntMaxCount(self: *Self, T: type, max_count: usize) ?T {
+            // Find number of chars comprising number
+            const count = @min(max_count, self.size());
+            var slice = self.begin[0..count];
+            for (slice, 0..) |ch, ix| {
+                switch (ch) {
+                    '0'...'9' => {},
+                    '-', '+' => if (ix > 0) {
+                        slice.len = ix;
+                        break;
+                    },
+                    else => {
+                        slice.len = ix;
+                        break;
+                    },
+                }
+            }
+            if (std.fmt.parseInt(T, slice, 10) catch null) |v| {
+                self._popFront(slice.len);
+                return v;
+            }
+            return null;
+        }
+    
+        pub fn popFront(self: *Self, count: usize) ?[]const u8 {
+            if (self.size() < count)
+                return null;
+            defer self._popFront(count);
+            return self.begin[0..count];
+        }
+        pub fn popBack(self: *Self, count: usize) ?[]const u8 {
+            const s = self.size();
+            if (s < count)
+                return null;
+            defer self._popBack(count);
+            return self.begin[s - count .. s];
+        }
+    
+        fn _popFront(self: *Self, count: usize) void {
+            self.begin += count;
+        }
+        fn _popBack(self: *Self, count: usize) void {
+            self.end -= count;
+        }
+    };
     
 };
