@@ -42,21 +42,33 @@ pub fn run(self: *Self) !void {
 
     var did_something: bool = false;
     if (self.options.junk) {
-        var junk: Junk = .{ .input = content, .output = content };
+        var junk: Junk = .{ .inoutput = content };
         try junk.call();
-        content = junk.output;
+        content = junk.inoutput;
         did_something = true;
     }
     if (self.options.ansi) {
-        var ansi: Ansi = .{ .input = content, .output = content };
+        var ansi: Ansi = .{ .inoutput = content };
         try ansi.call();
-        content = ansi.output;
+        content = ansi.inoutput;
         did_something = true;
     }
     if (self.options.utf8) {
-        var utf8: Utf8 = .{ .input = content, .output = content };
+        var utf8: Utf8 = .{ .inoutput = content };
         try utf8.call();
-        content = utf8.output;
+        content = utf8.inoutput;
+        did_something = true;
+    }
+    if (self.options.replace) |ab| {
+        var replace: Replace = .{ .a = ab[0], .b = ab[1], .inoutput = content };
+        replace.call();
+        content = replace.inoutput;
+        did_something = true;
+    }
+    if (self.options.newline) {
+        var newline: Newline = .{ .inoutput = content };
+        newline.call();
+        content = newline.inoutput;
         did_something = true;
     }
 
@@ -68,15 +80,14 @@ pub fn run(self: *Self) !void {
 }
 
 const Utf8 = struct {
-    input: []const u8,
-    output: []u8,
+    inoutput: []u8,
     write_ix: usize = undefined,
 
     fn call(self: *@This()) !void {
         self.write_ix = 0;
-        defer self.output.len = self.write_ix;
+        defer self.inoutput.len = self.write_ix;
 
-        var strange: rubr.strng.Strange = .init(self.input);
+        var strange: rubr.strng.Strange = .init(self.inoutput);
 
         while (strange.popOne()) |b0| {
             if (b0 <= 0x7f) {
@@ -106,7 +117,7 @@ const Utf8 = struct {
 
     fn process_1(self: *@This(), b0: u8) void {
         const ascii = b0;
-        self.output[self.write_ix] = ascii;
+        self.inoutput[self.write_ix] = ascii;
         self.write_ix += 1;
     }
     fn process_2(self: *@This(), b0: u8, b1: u8) !void {
@@ -118,7 +129,7 @@ const Utf8 = struct {
             },
         };
 
-        self.output[self.write_ix] = ascii;
+        self.inoutput[self.write_ix] = ascii;
         self.write_ix += 1;
     }
     fn process_3(self: *@This(), b0: u8, b1: u8, b2: u8) !void {
@@ -134,7 +145,7 @@ const Utf8 = struct {
             },
         };
 
-        self.output[self.write_ix] = ascii;
+        self.inoutput[self.write_ix] = ascii;
         self.write_ix += 1;
     }
     fn process_4(self: *@This(), b0: u8, b1: u8, b2: u8, b3: u8) !void {
@@ -146,24 +157,22 @@ const Utf8 = struct {
             },
         };
 
-        self.output[self.write_ix] = ascii;
+        self.inoutput[self.write_ix] = ascii;
         self.write_ix += 1;
     }
 };
 
 const Ansi = struct {
-    input: []const u8,
-    output: []u8,
-    write_ix: usize = undefined,
+    inoutput: []u8,
     fn call(self: *@This()) !void {
-        self.write_ix = 0;
-        defer self.output.len = self.write_ix;
+        var write_ix: usize = 0;
+        defer self.inoutput.len = write_ix;
 
-        var strange: rubr.strng.Strange = .init(self.input);
+        var strange: rubr.strng.Strange = .init(self.inoutput);
         while (strange.popTo('\x1b')) |str| {
             for (str, 0..) |ch, ix|
-                self.output[self.write_ix + ix] = ch;
-            self.write_ix += str.len;
+                self.inoutput[write_ix + ix] = ch;
+            write_ix += str.len;
 
             // Drop the ANSI code
             _ = strange.popTo('m');
@@ -171,29 +180,65 @@ const Ansi = struct {
 
         if (strange.popAll()) |str| {
             for (str, 0..) |ch, ix|
-                self.output[self.write_ix + ix] = ch;
-            self.write_ix += str.len;
+                self.inoutput[write_ix + ix] = ch;
+            write_ix += str.len;
         }
     }
 };
 
 const Junk = struct {
-    input: []const u8,
-    output: []u8,
-    write_ix: usize = undefined,
+    inoutput: []u8,
     fn call(self: *@This()) !void {
-        self.write_ix = 0;
-        defer self.output.len = self.write_ix;
+        var write_ix: usize = 0;
+        defer self.inoutput.len = write_ix;
 
-        var strange: rubr.strng.Strange = .init(self.input);
+        var strange: rubr.strng.Strange = .init(self.inoutput);
         while (strange.popOne()) |b| {
             switch (b) {
                 '\x00', '\xfe' => {},
                 else => {
-                    self.output[self.write_ix] = b;
-                    self.write_ix += 1;
+                    self.inoutput[write_ix] = b;
+                    write_ix += 1;
                 },
             }
+        }
+    }
+};
+
+const Replace = struct {
+    a: u8,
+    b: u8,
+    inoutput: []u8,
+    fn call(self: *@This()) void {
+        for (self.inoutput) |*ch| {
+            if (ch.* == self.a)
+                ch.* = self.b;
+        }
+    }
+};
+
+const Newline = struct {
+    inoutput: []u8,
+    fn call(self: *@This()) void {
+        var write_ix: usize = 0;
+        defer self.inoutput.len = write_ix;
+
+        var strange: rubr.strng.Strange = .init(self.inoutput);
+        while (strange.popTo('\n')) |str| {
+            const len = if (str.len > 0 and str[str.len - 1] == '\r') str.len - 1 else str.len;
+
+            for (str, 0..len) |ch, ix|
+                self.inoutput[write_ix + ix] = ch;
+            write_ix += str.len;
+
+            self.inoutput[write_ix] = '\n';
+            write_ix += 1;
+        }
+
+        if (strange.popAll()) |str| {
+            for (str, 0..) |ch, ix|
+                self.inoutput[write_ix + ix] = ch;
+            write_ix += str.len;
         }
     }
 };
