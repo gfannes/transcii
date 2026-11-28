@@ -1,6 +1,7 @@
 const std = @import("std");
 const rubr = @import("rubr.zig");
 const Options = @import("Options.zig");
+const markdown = @import("markdown.zig");
 
 const Self = @This();
 
@@ -39,8 +40,14 @@ pub fn run(self: *Self) !void {
     defer self.a.free(file_content);
 
     var content = file_content;
+    const updated = if (self.options.state) |state|
+        try markdown.setState(self.a, content, state, self.options.line_number, self.options.ranges.items, self.options.helix_ranges)
+    else
+        null;
+    defer if (updated) |buffer| self.a.free(buffer);
+    if (updated) |buffer| content = buffer;
 
-    var did_something: bool = false;
+    var did_something = updated != null;
     if (self.options.junk) {
         var junk: Junk = .{ .inoutput = content };
         try junk.call();
@@ -74,7 +81,7 @@ pub fn run(self: *Self) !void {
 
     if (!did_something) {
         std.log.err("Did not do anything", .{});
-    } else if (self.options.output_fp) |output| {
+    } else if (self.options.output_fp orelse (if (updated != null) input_fp else null)) |output| {
         try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = output, .data = content });
     }
 }
