@@ -27,6 +27,7 @@ pub fn setState(
     var found_line = false;
     var start: usize = 0;
     var range_end: usize = 0;
+    var selection_end: usize = 0;
     var number: usize = 1;
     var separator: u8 = '\n';
 
@@ -41,14 +42,20 @@ pub fn setState(
         if (line_number) |target| {
             selected = number == target;
         } else {
+            const range_start = range_end;
             range_end = if (helix_ranges)
                 range_end + try std.unicode.utf8CountCodepoints(content[start..end])
             else
                 end;
             while (remaining.len != 0 and remaining[0].start < range_end) {
+                const range = remaining[0];
                 selected = true;
+                if (helix_ranges)
+                    selection_end = @max(selection_end, range.start +| range.size);
                 remaining = remaining[1..];
             }
+            // Carry overlapping Helix selections into later lines.
+            selected = selected or selection_end > range_start;
         }
 
         if (selected) {
@@ -69,6 +76,22 @@ pub fn setState(
 
 fn rangeStartsBefore(_: void, lhs: Range, rhs: Range) bool {
     return lhs.start < rhs.start;
+}
+
+test "Helix selections update every overlapping line once" {
+    const a = std.testing.allocator;
+    const content = "é first\r\n- second\r\n# third\r\n- fourth\r\nlast";
+    var ranges = [_]Range{
+        .{ .start = 12, .size = 1 },
+        .{ .start = 2, .size = 26 },
+        .{ .start = 38, .size = 0 },
+    };
+    const updated = (try setState(a, content, "CUSTOM", null, &ranges, true)).?;
+    defer a.free(updated);
+    try std.testing.expectEqualStrings(
+        "CUSTOM é first\r\n- CUSTOM second\r\n# CUSTOM third\r\n- fourth\r\nCUSTOM last",
+        updated,
+    );
 }
 
 const states = [_]struct { name: []const u8, bullet: ?[]const u8 }{
